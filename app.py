@@ -5,7 +5,7 @@ Todo expresado en dólares al tipo de cambio MEP.
 """
 
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import pandas as pd
 import plotly.express as px
@@ -107,6 +107,51 @@ def fmt_ars(value: float) -> str:
         return str(value)
 
 
+# ---------- Clasificación ----------
+US_TICKERS = {
+    "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "GOOG", "META", "NVDA", "AMD",
+    "QQQ", "SPY", "DIA", "IWM", "XLF", "XLK", "XLE", "XLV", "XLI", "XLY",
+    "XLP", "XLU", "XLB", "XLRE", "QCOM", "AVGO", "NFLX", "CRM", "ADBE",
+    "INTC", "CSCO", "PEP", "KO", "JNJ", "UNH", "V", "MA", "JPM", "BAC",
+    "WMT", "HD", "DIS", "NKE", "PFE", "MRK", "ABBV", "TMO", "COST", "MCD",
+    "SNOW", "SHOP", "SQ", "PYPL", "UBER", "COIN", "PLTR", "SOFI", "HOOD",
+    "MELI", "GLOB", "DESP"
+}
+
+ARG_TICKERS = {
+    "YPFD", "GGAL", "BMA", "SUPV", "BBAR", "TECO2", "PAMP", "TXAR", "ALUA",
+    "CRES", "EDN", "LOMA", "MIRG", "COME", "TRAN", "CEPU", "TGSU2", "HARG",
+    "IRSA", "CTIO", "BYMA", "VALO", "BHIP", "MORI", "METR", "AGRO", "SAMI"
+}
+
+
+def classify_instrument(ticker: str, group: str) -> Tuple[str, str]:
+    t = (ticker or "").upper().strip()
+    g = (group or "").upper()
+
+    if "CEDEAR" in g or t in US_TICKERS:
+        tipo = "CEDEARs"
+    elif "FCI" in g or "FONDO" in g:
+        tipo = "FCI"
+    elif "BONO" in g or "LETRA" in g:
+        tipo = "Bonos"
+    elif "ACCION" in g or t in ARG_TICKERS:
+        tipo = "Acciones"
+    else:
+        tipo = "Otros"
+
+    if t in US_TICKERS or "CEDEAR" in g:
+        geo = "Estados Unidos"
+    elif t in ARG_TICKERS or "ACCION" in g or "BONO" in g:
+        geo = "Argentina"
+    elif t in {"MELI", "GLOB", "DESP"}:
+        geo = "LatAm"
+    else:
+        geo = "Otros"
+
+    return tipo, geo
+
+
 def generate_alerts(total_usd: float, cash_usd: float, instruments: List[Dict]) -> List[Dict]:
     alerts = []
     if total_usd <= 0:
@@ -115,7 +160,6 @@ def generate_alerts(total_usd: float, cash_usd: float, instruments: List[Dict]) 
     sorted_inst = sorted(instruments, key=lambda x: x["Monto USD"], reverse=True)
     top = sorted_inst[0] if sorted_inst else None
 
-    # Concentración
     if top and top.get("Peso %", 0) >= 12:
         severity = "high" if top["Peso %"] >= 18 else "medium"
         alerts.append({
@@ -124,7 +168,6 @@ def generate_alerts(total_usd: float, cash_usd: float, instruments: List[Dict]) 
             "desc": f"{top['Ticker']} representa el {top['Peso %']:.1f}% de la cartera. Considerá reducir exposición si supera tu tolerancia al riesgo."
         })
 
-    # Liquidez
     total_with_cash = total_usd + cash_usd
     liq_pct = (cash_usd / total_with_cash) * 100 if total_with_cash > 0 else 0
 
@@ -202,9 +245,13 @@ if positions_raw and "groupedInstruments" in positions_raw:
             usd_amount = amount / mep if mep > 1 else amount
             total_ars += amount
             total_usd += usd_amount
+            ticker = inst.get("ticker", "")
+            tipo, geo = classify_instrument(ticker, group_name)
             all_instruments.append({
                 "Grupo": group_name,
-                "Ticker": inst.get("ticker", ""),
+                "Ticker": ticker,
+                "Tipo": tipo,
+                "Geografia": geo,
                 "Cantidad": float(inst.get("quantity", 0) or 0),
                 "Precio": float(inst.get("price", 0) or 0),
                 "Monto ARS": amount,
@@ -259,9 +306,8 @@ with c4:
 
 st.markdown("---")
 
-# ===================== ALERTAS =====================
+# Alertas
 st.markdown("### Alertas y recomendaciones")
-
 alerts = generate_alerts(total_usd, cash_usd_total, all_instruments)
 
 if alerts:
@@ -280,12 +326,54 @@ else:
 
 st.markdown("---")
 
+# ===================== COMPOSICIÓN =====================
+st.markdown("### Composición de la cartera")
+
+if all_instruments:
+    df = pd.DataFrame(all_instruments)
+
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.markdown("**Por tipo de instrumento**")
+        by_tipo = df.groupby("Tipo")["Monto USD"].sum().reset_index()
+        by_tipo = by_tipo.sort_values("Monto USD", ascending=False)
+        by_tipo = pd.concat([
+            by_tipo,
+            pd.DataFrame([{"Tipo": "Liquidez", "Monto USD": cash_usd_total}])
+        ], ignore_index=True)
+
+        fig1 = px.pie(by_tipo, values="Monto USD", names="Tipo", hole=0.55,
+                      color_discrete_sequence=px.colors.qualitative.Set2)
+        fig1.update_traces(textposition="inside", textinfo="percent+label",
+                           marker=dict(line=dict(color="#0e0e0e", width=2)))
+        fig1.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                           font_color="#ccc", showlegend=False,
+                           margin=dict(t=10, b=10, l=10, r=10), height=280)
+        st.plotly_chart(fig1, use_container_width=True)
+
+    with col_right:
+        st.markdown("**Por geografía**")
+        by_geo = df.groupby("Geografia")["Monto USD"].sum().reset_index()
+        by_geo = by_geo.sort_values("Monto USD", ascending=False)
+
+        fig2 = px.pie(by_geo, values="Monto USD", names="Geografia", hole=0.55,
+                      color_discrete_sequence=px.colors.qualitative.Pastel)
+        fig2.update_traces(textposition="inside", textinfo="percent+label",
+                           marker=dict(line=dict(color="#0e0e0e", width=2)))
+        fig2.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                           font_color="#ccc", showlegend=False,
+                           margin=dict(t=10, b=10, l=10, r=10), height=280)
+        st.plotly_chart(fig2, use_container_width=True)
+
+st.markdown("---")
+
 # Posiciones
 st.markdown("### Posiciones")
 
 if all_instruments:
     df_pos = pd.DataFrame(all_instruments).sort_values("Monto USD", ascending=False)
-    show_cols = ["Ticker", "Grupo", "Cantidad", "Precio", "Monto USD", "Monto ARS", "Peso %"]
+    show_cols = ["Ticker", "Tipo", "Geografia", "Cantidad", "Precio", "Monto USD", "Monto ARS", "Peso %"]
     st.dataframe(
         df_pos[show_cols].style.format({
             "Cantidad": "{:,.2f}",
