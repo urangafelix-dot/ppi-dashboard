@@ -107,6 +107,10 @@ def fmt_ars(value: float) -> str:
         return str(value)
 
 
+def fmt_pct(value: float) -> str:
+    return f"{value:.1f}%"
+
+
 # ---------- Clasificación ----------
 US_TICKERS = {
     "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "GOOG", "META", "NVDA", "AMD",
@@ -115,7 +119,14 @@ US_TICKERS = {
     "INTC", "CSCO", "PEP", "KO", "JNJ", "UNH", "V", "MA", "JPM", "BAC",
     "WMT", "HD", "DIS", "NKE", "PFE", "MRK", "ABBV", "TMO", "COST", "MCD",
     "SNOW", "SHOP", "SQ", "PYPL", "UBER", "COIN", "PLTR", "SOFI", "HOOD",
-    "MELI", "GLOB", "DESP"
+    "MELI", "GLOB", "DESP", "SNDK", "RGTI"
+}
+
+TECH_TICKERS = {
+    "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "GOOG", "META", "NVDA", "AMD",
+    "QQQ", "XLK", "QCOM", "AVGO", "NFLX", "CRM", "ADBE", "INTC", "CSCO",
+    "SNOW", "SHOP", "SQ", "PYPL", "UBER", "COIN", "PLTR", "SOFI", "HOOD",
+    "SNDK", "RGTI"
 }
 
 ARG_TICKERS = {
@@ -326,7 +337,7 @@ else:
 
 st.markdown("---")
 
-# ===================== COMPOSICIÓN =====================
+# Composición
 st.markdown("### Composición de la cartera")
 
 if all_instruments:
@@ -365,6 +376,34 @@ if all_instruments:
                            font_color="#ccc", showlegend=False,
                            margin=dict(t=10, b=10, l=10, r=10), height=280)
         st.plotly_chart(fig2, use_container_width=True)
+
+st.markdown("---")
+
+# ===================== CONCENTRACIÓN / TILTS =====================
+st.markdown("### Concentración y tilts")
+
+if all_instruments and total_usd > 0:
+    df = pd.DataFrame(all_instruments)
+    top = df.sort_values("Monto USD", ascending=False).iloc[0]
+
+    tech_usd = df[df["Ticker"].isin(TECH_TICKERS)]["Monto USD"].sum()
+    tech_pct = (tech_usd / total_usd) * 100
+
+    arg_usd = df[df["Geografia"] == "Argentina"]["Monto USD"].sum()
+    arg_pct = (arg_usd / total_usd) * 100
+
+    us_usd = df[df["Geografia"] == "Estados Unidos"]["Monto USD"].sum()
+    us_pct = (us_usd / total_usd) * 100
+
+    t1, t2, t3, t4 = st.columns(4)
+    with t1:
+        st.metric("Mayor posición", f"{top['Ticker']}", delta=fmt_pct(top["Peso %"]))
+    with t2:
+        st.metric("Exposición Tech", fmt_pct(tech_pct))
+    with t3:
+        st.metric("Argentina", fmt_pct(arg_pct))
+    with t4:
+        st.metric("Estados Unidos", fmt_pct(us_pct))
 
 st.markdown("---")
 
