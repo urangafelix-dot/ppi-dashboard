@@ -1,6 +1,6 @@
 """
 Wrapper limpio sobre ppi-client para el dashboard.
-Maneja login, errores y formatea los datos de forma consistente.
+Maneja login, errores, formatea datos y calcula dólar MEP.
 """
 
 from datetime import datetime, timedelta
@@ -69,6 +69,36 @@ class PPIWrapper:
         return self.ppi.orders.get_orders(
             self.account_number, date_from=date_from, date_to=date_to
         ) or []
+
+    def get_mep_rate(self) -> Optional[float]:
+        """
+        Calcula el dólar MEP implícito usando AL30 / AL30D.
+        Método estándar y más confiable del mercado argentino.
+        """
+        self.ensure_login()
+        try:
+            for settlement in ["A-48HS", "INMEDIATA", "A-24HS"]:
+                try:
+                    al30 = self.ppi.marketdata.current("AL30", "BONOS", settlement)
+                    al30d = self.ppi.marketdata.current("AL30D", "BONOS", settlement)
+
+                    price_ars = None
+                    price_usd = None
+
+                    if isinstance(al30, dict):
+                        price_ars = al30.get("price") or al30.get("Price")
+                    if isinstance(al30d, dict):
+                        price_usd = al30d.get("price") or al30d.get("Price")
+
+                    if price_ars and price_usd and float(price_usd) > 0:
+                        rate = float(price_ars) / float(price_usd)
+                        if 500 < rate < 3000:
+                            return round(rate, 2)
+                except Exception:
+                    continue
+            return None
+        except Exception:
+            return None
 
 
 def create_client_from_env() -> PPIWrapper:
