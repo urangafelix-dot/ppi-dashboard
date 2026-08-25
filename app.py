@@ -4,8 +4,8 @@ Dashboard profesional de monitoreo de cartera.
 Todo expresado en dólares al tipo de cambio MEP.
 """
 
-import os
 from datetime import datetime
+from typing import Dict, List
 
 import pandas as pd
 import plotly.express as px
@@ -26,20 +26,14 @@ load_dotenv()
 
 st.markdown("""
 <style>
-    .stApp {
-        background-color: #0e0e0e;
-        color: #e8e8e8;
-    }
+    .stApp { background-color: #0e0e0e; color: #e8e8e8; }
     h1, h2, h3 {
         font-family: 'Inter', 'Segoe UI', sans-serif !important;
         font-weight: 500 !important;
         letter-spacing: -0.02em;
         color: #f5f5f5 !important;
     }
-    h1 {
-        font-size: 1.8rem !important;
-        margin-bottom: 0.2rem !important;
-    }
+    h1 { font-size: 1.8rem !important; margin-bottom: 0.2rem !important; }
     [data-testid="stMetric"] {
         background: #1a1a1a;
         border: 1px solid #2a2a2a;
@@ -48,48 +42,56 @@ st.markdown("""
     }
     [data-testid="stMetricLabel"] {
         color: #999 !important;
-        font-size: 0.8rem !important;
+        font-size: 0.75rem !important;
         text-transform: uppercase;
         letter-spacing: 0.04em;
     }
     [data-testid="stMetricValue"] {
         color: #f5f5f5 !important;
-        font-size: 1.5rem !important;
+        font-size: 1.4rem !important;
         font-weight: 500 !important;
     }
     [data-testid="stSidebar"] {
         background-color: #111111;
         border-right: 1px solid #222;
     }
-    .stDataFrame {
+    .stDataFrame { border: 1px solid #2a2a2a; border-radius: 8px; }
+    hr { border-color: #2a2a2a !important; margin: 1.4rem 0 !important; }
+    .stCaption { color: #777 !important; }
+
+    .alert-card {
+        background: #1a1a1a;
         border: 1px solid #2a2a2a;
-        border-radius: 8px;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 10px;
     }
-    hr {
-        border-color: #2a2a2a !important;
-        margin: 1.5rem 0 !important;
+    .alert-title {
+        font-size: 0.95rem;
+        font-weight: 500;
+        color: #f0f0f0;
+        margin-bottom: 4px;
     }
-    .stCaption {
-        color: #777 !important;
+    .alert-desc {
+        font-size: 0.85rem;
+        color: #999;
+        line-height: 1.4;
     }
+    .alert-high { border-left: 3px solid #e74c3c; }
+    .alert-medium { border-left: 3px solid #f39c12; }
+    .alert-low { border-left: 3px solid #2ecc71; }
+    .alert-info { border-left: 3px solid #3498db; }
 </style>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown("### Configuración")
-    st.markdown("")
-    refresh_seconds = st.slider(
-        "Auto-refresh (seg)",
-        min_value=30,
-        max_value=300,
-        value=60,
-        step=30,
-    )
+    refresh_seconds = st.slider("Auto-refresh (seg)", 30, 300, 60, 30)
     st.markdown("---")
-    st.caption("Solo lectura")
-    st.caption("Valores en USD MEP")
+    st.caption("Solo lectura · USD MEP")
 
 st_autorefresh(interval=refresh_seconds * 1000, key="data_refresh")
+
 
 def fmt_usd(value: float) -> str:
     try:
@@ -97,11 +99,63 @@ def fmt_usd(value: float) -> str:
     except Exception:
         return str(value)
 
+
 def fmt_ars(value: float) -> str:
     try:
         return f"$ {value:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except Exception:
         return str(value)
+
+
+def generate_alerts(total_usd: float, cash_usd: float, instruments: List[Dict]) -> List[Dict]:
+    alerts = []
+    if total_usd <= 0:
+        return alerts
+
+    sorted_inst = sorted(instruments, key=lambda x: x["Monto USD"], reverse=True)
+    top = sorted_inst[0] if sorted_inst else None
+
+    # Concentración
+    if top and top.get("Peso %", 0) >= 12:
+        severity = "high" if top["Peso %"] >= 18 else "medium"
+        alerts.append({
+            "severity": severity,
+            "title": f"Alta concentración en {top['Ticker']}",
+            "desc": f"{top['Ticker']} representa el {top['Peso %']:.1f}% de la cartera. Considerá reducir exposición si supera tu tolerancia al riesgo."
+        })
+
+    # Liquidez
+    total_with_cash = total_usd + cash_usd
+    liq_pct = (cash_usd / total_with_cash) * 100 if total_with_cash > 0 else 0
+
+    if liq_pct < 3:
+        alerts.append({
+            "severity": "high",
+            "title": "Liquidez muy baja",
+            "desc": f"Solo tenés {liq_pct:.1f}% en efectivo. Recomendable mantener al menos 5-8% para oportunidades."
+        })
+    elif liq_pct < 6:
+        alerts.append({
+            "severity": "medium",
+            "title": "Liquidez ajustada",
+            "desc": f"Liquidez actual: {liq_pct:.1f}%. Podría ser conveniente aumentar el colchón de efectivo."
+        })
+    elif liq_pct > 20:
+        alerts.append({
+            "severity": "info",
+            "title": "Exceso de liquidez",
+            "desc": f"Tenés {liq_pct:.1f}% en efectivo. Considerá ponerlo a trabajar en un FCI money market."
+        })
+
+    if not any(a["severity"] in ("high", "medium") for a in alerts):
+        alerts.append({
+            "severity": "low",
+            "title": "Cartera relativamente equilibrada",
+            "desc": "No se detectaron concentraciones extremas ni problemas de liquidez relevantes."
+        })
+
+    return alerts
+
 
 @st.cache_data(ttl=30, show_spinner="Actualizando cartera...")
 def load_portfolio_data():
@@ -122,6 +176,7 @@ def load_portfolio_data():
         "timestamp": datetime.now(),
     }
 
+
 try:
     data = load_portfolio_data()
 except Exception as e:
@@ -133,9 +188,7 @@ account = data["account_number"]
 mep = data["mep_rate"] or 1.0
 ts = data["timestamp"].strftime("%d/%m/%Y %H:%M")
 
-st.markdown("# Portfolio")
-st.caption(f"Cuenta {account}  ·  {ts}  ·  Dólar MEP {mep:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-
+# Process positions
 positions_raw = data["positions_raw"]
 all_instruments = []
 total_ars = 0.0
@@ -158,11 +211,14 @@ if positions_raw and "groupedInstruments" in positions_raw:
                 "Monto USD": round(usd_amount, 2),
             })
 
+if total_usd > 0:
+    for inst in all_instruments:
+        inst["Peso %"] = round((inst["Monto USD"] / total_usd) * 100, 2)
+
+# Cash
 cash_ars = 0.0
 cash_usd = 0.0
-balances = data["balances"] or []
-
-for bal in balances:
+for bal in (data["balances"] or []):
     name = (bal.get("name") or "").lower()
     amount = float(bal.get("amount", 0) or 0)
     symbol = str(bal.get("symbol", "")).upper()
@@ -172,6 +228,11 @@ for bal in balances:
         cash_usd += amount
 
 cash_usd_total = cash_usd + (cash_ars / mep if mep > 1 else 0)
+grand_total_usd = total_usd + cash_usd_total
+
+# Header
+st.markdown("# Portfolio")
+st.caption(f"Cuenta {account}  ·  {ts}  ·  Dólar MEP {mep:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
 st.markdown(f"""
 <div style="margin: 1.5rem 0 0.5rem 0;">
@@ -179,7 +240,7 @@ st.markdown(f"""
         {fmt_ars(total_ars + cash_ars)}
     </div>
     <div style="font-size: 1.1rem; color: #888; margin-top: 0.2rem;">
-        {fmt_usd(total_usd + cash_usd_total)} al dólar MEP
+        {fmt_usd(grand_total_usd)} al dólar MEP
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -197,15 +258,34 @@ with c4:
     st.metric("Instrumentos", str(len(all_instruments)))
 
 st.markdown("---")
+
+# ===================== ALERTAS =====================
+st.markdown("### Alertas y recomendaciones")
+
+alerts = generate_alerts(total_usd, cash_usd_total, all_instruments)
+
+if alerts:
+    cols = st.columns(min(3, len(alerts)))
+    for i, alert in enumerate(alerts[:3]):
+        with cols[i % len(cols)]:
+            severity_class = f"alert-{alert['severity']}"
+            st.markdown(f"""
+            <div class="alert-card {severity_class}">
+                <div class="alert-title">{alert['title']}</div>
+                <div class="alert-desc">{alert['desc']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+else:
+    st.caption("Sin alertas relevantes.")
+
+st.markdown("---")
+
+# Posiciones
 st.markdown("### Posiciones")
 
 if all_instruments:
-    df_pos = pd.DataFrame(all_instruments)
-    df_pos = df_pos.sort_values("Monto USD", ascending=False)
-    if total_usd > 0:
-        df_pos["Peso %"] = (df_pos["Monto USD"] / total_usd * 100).round(2)
+    df_pos = pd.DataFrame(all_instruments).sort_values("Monto USD", ascending=False)
     show_cols = ["Ticker", "Grupo", "Cantidad", "Precio", "Monto USD", "Monto ARS", "Peso %"]
-    show_cols = [c for c in show_cols if c in df_pos.columns]
     st.dataframe(
         df_pos[show_cols].style.format({
             "Cantidad": "{:,.2f}",
@@ -218,25 +298,13 @@ if all_instruments:
         hide_index=True,
         height=min(420, 50 + len(df_pos) * 35),
     )
-    if total_usd > 0 and len(df_pos) > 1:
-        fig = px.pie(df_pos.head(12), values="Monto USD", names="Ticker", hole=0.55)
-        fig.update_traces(textposition="inside", textinfo="percent", marker=dict(line=dict(color="#0e0e0e", width=2)))
-        fig.update_layout(
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font_color="#ccc",
-            showlegend=True,
-            legend=dict(orientation="h", y=-0.1),
-            margin=dict(t=20, b=20, l=20, r=20),
-            height=340,
-        )
-        st.plotly_chart(fig, use_container_width=True)
 else:
     st.info("Sin posiciones abiertas.")
 
 st.markdown("---")
 
 left, right = st.columns(2)
+
 with left:
     st.markdown("### Órdenes activas")
     active = data["active_orders"]
