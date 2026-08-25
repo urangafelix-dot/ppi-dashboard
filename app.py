@@ -1,7 +1,6 @@
 """
 PPI Portfolio Live
-Dashboard profesional de monitoreo de cartera.
-Todo expresado en dólares al tipo de cambio MEP.
+Dashboard profesional + sección de debug de valuación.
 """
 
 from datetime import datetime
@@ -58,7 +57,6 @@ st.markdown("""
     .stDataFrame { border: 1px solid #2a2a2a; border-radius: 8px; }
     hr { border-color: #2a2a2a !important; margin: 1.4rem 0 !important; }
     .stCaption { color: #777 !important; }
-
     .alert-card {
         background: #1a1a1a;
         border: 1px solid #2a2a2a;
@@ -66,27 +64,28 @@ st.markdown("""
         padding: 14px 18px;
         margin-bottom: 10px;
     }
-    .alert-title {
-        font-size: 0.95rem;
-        font-weight: 500;
-        color: #f0f0f0;
-        margin-bottom: 4px;
-    }
-    .alert-desc {
-        font-size: 0.85rem;
-        color: #999;
-        line-height: 1.4;
-    }
+    .alert-title { font-size: 0.95rem; font-weight: 500; color: #f0f0f0; margin-bottom: 4px; }
+    .alert-desc { font-size: 0.85rem; color: #999; line-height: 1.4; }
     .alert-high { border-left: 3px solid #e74c3c; }
     .alert-medium { border-left: 3px solid #f39c12; }
     .alert-low { border-left: 3px solid #2ecc71; }
     .alert-info { border-left: 3px solid #3498db; }
+    .debug-box {
+        background: #141414;
+        border: 1px solid #333;
+        border-radius: 8px;
+        padding: 16px;
+        font-family: monospace;
+        font-size: 0.85rem;
+        color: #ccc;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown("### Configuración")
     refresh_seconds = st.slider("Auto-refresh (seg)", 30, 300, 60, 30)
+    show_debug = st.checkbox("Mostrar debug de valuación", value=True)
     st.markdown("---")
     st.caption("Solo lectura · USD MEP")
 
@@ -111,7 +110,6 @@ def fmt_pct(value: float) -> str:
     return f"{value:.1f}%"
 
 
-# ---------- Clasificación ----------
 US_TICKERS = {
     "TSLA", "AAPL", "MSFT", "AMZN", "GOOGL", "GOOG", "META", "NVDA", "AMD",
     "QQQ", "SPY", "DIA", "IWM", "XLF", "XLK", "XLE", "XLV", "XLI", "XLY",
@@ -247,15 +245,31 @@ positions_raw = data["positions_raw"]
 all_instruments = []
 total_ars = 0.0
 total_usd = 0.0
+raw_position_sum = 0.0  # para debug
 
 if positions_raw and "groupedInstruments" in positions_raw:
     for group in positions_raw["groupedInstruments"]:
         group_name = group.get("name", "Otros")
         for inst in group.get("instruments", []):
             amount = float(inst.get("amount", 0) or 0)
-            usd_amount = amount / mep if mep > 1 else amount
-            total_ars += amount
+            raw_position_sum += amount
+
+            # Intentamos detectar moneda
+            currency = str(inst.get("currency") or inst.get("Currency") or inst.get("symbol") or "").upper()
+            is_usd = any(x in currency for x in ["USD", "DOLAR", "DÓLAR", "MEP", "CCL"])
+
+            if is_usd and amount > 0:
+                # Ya viene en dólares
+                usd_amount = amount
+                ars_amount = amount * mep
+            else:
+                # Asumimos ARS
+                ars_amount = amount
+                usd_amount = amount / mep if mep > 1 else amount
+
+            total_ars += ars_amount
             total_usd += usd_amount
+
             ticker = inst.get("ticker", "")
             tipo, geo = classify_instrument(ticker, group_name)
             all_instruments.append({
@@ -265,8 +279,10 @@ if positions_raw and "groupedInstruments" in positions_raw:
                 "Geografia": geo,
                 "Cantidad": float(inst.get("quantity", 0) or 0),
                 "Precio": float(inst.get("price", 0) or 0),
-                "Monto ARS": amount,
+                "Monto ARS": round(ars_amount, 2),
                 "Monto USD": round(usd_amount, 2),
+                "Raw Amount": amount,
+                "Detected Currency": currency or "ARS (asumido)",
             })
 
 if total_usd > 0:
@@ -276,17 +292,26 @@ if total_usd > 0:
 # Cash
 cash_ars = 0.0
 cash_usd = 0.0
+cash_details = []
+
 for bal in (data["balances"] or []):
-    name = (bal.get("name") or "").lower()
+    name = bal.get("name") or ""
     amount = float(bal.get("amount", 0) or 0)
     symbol = str(bal.get("symbol", "")).upper()
-    if "peso" in name or symbol in ("$", "ARS"):
+    settlement = bal.get("settlement", "")
+
+    is_peso = "peso" in name.lower() or symbol in ("$", "ARS")
+
+    if is_peso:
         cash_ars += amount
+        cash_details.append({"name": name, "settlement": settlement, "amount": amount, "currency": "ARS"})
     else:
         cash_usd += amount
+        cash_details.append({"name": name, "settlement": settlement, "amount": amount, "currency": "USD"})
 
 cash_usd_total = cash_usd + (cash_ars / mep if mep > 1 else 0)
 grand_total_usd = total_usd + cash_usd_total
+grand_total_ars = total_ars + cash_ars + (cash_usd * mep if mep > 1 else 0)
 
 # Header
 st.markdown("# Portfolio")
@@ -295,7 +320,7 @@ st.caption(f"Cuenta {account}  ·  {ts}  ·  Dólar MEP {mep:,.2f}".replace(",",
 st.markdown(f"""
 <div style="margin: 1.5rem 0 0.5rem 0;">
     <div style="font-size: 2.8rem; font-weight: 500; letter-spacing: -0.03em; color: #f5f5f5;">
-        {fmt_ars(total_ars + cash_ars)}
+        {fmt_ars(grand_total_ars)}
     </div>
     <div style="font-size: 1.1rem; color: #888; margin-top: 0.2rem;">
         {fmt_usd(grand_total_usd)} al dólar MEP
@@ -342,56 +367,39 @@ st.markdown("### Composición de la cartera")
 
 if all_instruments:
     df = pd.DataFrame(all_instruments)
-
     col_left, col_right = st.columns(2)
 
     with col_left:
         st.markdown("**Por tipo de instrumento**")
         by_tipo = df.groupby("Tipo")["Monto USD"].sum().reset_index()
         by_tipo = by_tipo.sort_values("Monto USD", ascending=False)
-        by_tipo = pd.concat([
-            by_tipo,
-            pd.DataFrame([{"Tipo": "Liquidez", "Monto USD": cash_usd_total}])
-        ], ignore_index=True)
-
-        fig1 = px.pie(by_tipo, values="Monto USD", names="Tipo", hole=0.55,
-                      color_discrete_sequence=px.colors.qualitative.Set2)
-        fig1.update_traces(textposition="inside", textinfo="percent+label",
-                           marker=dict(line=dict(color="#0e0e0e", width=2)))
-        fig1.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                           font_color="#ccc", showlegend=False,
-                           margin=dict(t=10, b=10, l=10, r=10), height=280)
+        by_tipo = pd.concat([by_tipo, pd.DataFrame([{"Tipo": "Liquidez", "Monto USD": cash_usd_total}])], ignore_index=True)
+        fig1 = px.pie(by_tipo, values="Monto USD", names="Tipo", hole=0.55, color_discrete_sequence=px.colors.qualitative.Set2)
+        fig1.update_traces(textposition="inside", textinfo="percent+label", marker=dict(line=dict(color="#0e0e0e", width=2)))
+        fig1.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#ccc", showlegend=False, margin=dict(t=10, b=10, l=10, r=10), height=280)
         st.plotly_chart(fig1, use_container_width=True)
 
     with col_right:
         st.markdown("**Por geografía**")
         by_geo = df.groupby("Geografia")["Monto USD"].sum().reset_index()
         by_geo = by_geo.sort_values("Monto USD", ascending=False)
-
-        fig2 = px.pie(by_geo, values="Monto USD", names="Geografia", hole=0.55,
-                      color_discrete_sequence=px.colors.qualitative.Pastel)
-        fig2.update_traces(textposition="inside", textinfo="percent+label",
-                           marker=dict(line=dict(color="#0e0e0e", width=2)))
-        fig2.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                           font_color="#ccc", showlegend=False,
-                           margin=dict(t=10, b=10, l=10, r=10), height=280)
+        fig2 = px.pie(by_geo, values="Monto USD", names="Geografia", hole=0.55, color_discrete_sequence=px.colors.qualitative.Pastel)
+        fig2.update_traces(textposition="inside", textinfo="percent+label", marker=dict(line=dict(color="#0e0e0e", width=2)))
+        fig2.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#ccc", showlegend=False, margin=dict(t=10, b=10, l=10, r=10), height=280)
         st.plotly_chart(fig2, use_container_width=True)
 
 st.markdown("---")
 
-# ===================== CONCENTRACIÓN / TILTS =====================
+# Tilts
 st.markdown("### Concentración y tilts")
 
 if all_instruments and total_usd > 0:
     df = pd.DataFrame(all_instruments)
     top = df.sort_values("Monto USD", ascending=False).iloc[0]
-
     tech_usd = df[df["Ticker"].isin(TECH_TICKERS)]["Monto USD"].sum()
     tech_pct = (tech_usd / total_usd) * 100
-
     arg_usd = df[df["Geografia"] == "Argentina"]["Monto USD"].sum()
     arg_pct = (arg_usd / total_usd) * 100
-
     us_usd = df[df["Geografia"] == "Estados Unidos"]["Monto USD"].sum()
     us_pct = (us_usd / total_usd) * 100
 
@@ -431,7 +439,6 @@ else:
 st.markdown("---")
 
 left, right = st.columns(2)
-
 with left:
     st.markdown("### Órdenes activas")
     active = data["active_orders"]
@@ -451,6 +458,52 @@ with right:
         st.dataframe(df_mov[cols].head(12), use_container_width=True, hide_index=True)
     else:
         st.caption("Sin movimientos recientes.")
+
+# ===================== DEBUG =====================
+if show_debug:
+    st.markdown("---")
+    st.markdown("### Debug de valuación")
+    st.caption("Esta sección es temporal para entender la diferencia con el total de PPI.")
+
+    st.markdown("#### 1. Saldos de caja (raw)")
+    if cash_details:
+        st.dataframe(pd.DataFrame(cash_details), use_container_width=True, hide_index=True)
+    else:
+        st.write("Sin saldos de caja")
+
+    st.markdown(f"""
+    - **Suma caja ARS**: {fmt_ars(cash_ars)}
+    - **Suma caja USD (nativos)**: {fmt_usd(cash_usd)}
+    - **Caja total en USD MEP**: {fmt_usd(cash_usd_total)}
+    """)
+
+    st.markdown("#### 2. Posiciones")
+    st.markdown(f"""
+    - **Suma raw de `amount`** (tal cual viene de PPI): {fmt_ars(raw_position_sum)}
+    - **Total posiciones convertido a ARS**: {fmt_ars(total_ars)}
+    - **Total posiciones en USD MEP**: {fmt_usd(total_usd)}
+    """)
+
+    st.markdown("#### 3. Totales del dashboard")
+    st.markdown(f"""
+    - **Grand Total ARS** (posiciones + caja): {fmt_ars(grand_total_ars)}
+    - **Grand Total USD MEP**: {fmt_usd(grand_total_usd)}
+    - **Dólar MEP usado**: {mep:,.2f}
+    """)
+
+    st.markdown("#### 4. Comparación con PPI")
+    st.markdown("""
+    Según las capturas que me pasaste:
+    - PPI muestra **ARS 16.946.739**
+    - PPI muestra **US$ 11.013** (MEP)
+    
+    Revisá arriba si la suma raw de posiciones + caja se acerca más a esos números.
+    """)
+
+    if all_instruments:
+        st.markdown("#### 5. Primeras 8 posiciones (raw amount + moneda detectada)")
+        debug_df = pd.DataFrame(all_instruments)[["Ticker", "Raw Amount", "Detected Currency", "Monto ARS", "Monto USD"]].head(8)
+        st.dataframe(debug_df, use_container_width=True, hide_index=True)
 
 st.markdown("---")
 st.caption("Solo lectura · API oficial PPI · MEP calculado con AL30/AL30D")
